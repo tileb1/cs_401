@@ -4,9 +4,10 @@ from open_clip.factory import get_tokenizer
 import pytest
 import open_clip
 import os
+
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-if hasattr(torch._C, '_jit_set_profiling_executor'):
+if hasattr(torch._C, "_jit_set_profiling_executor"):
     # legacy executor is too slow to compile large models for unit tests
     # no need for the fusion performance here
     torch._C._jit_set_profiling_executor(True)
@@ -22,12 +23,14 @@ test_simple_models = [
 ]
 
 
-@pytest.mark.parametrize("model_type,pretrained,jit,force_custom_text", test_simple_models)
+@pytest.mark.parametrize(
+    "model_type,pretrained,jit,force_custom_text", test_simple_models
+)
 def test_inference_simple(
-        model_type,
-        pretrained,
-        jit,
-        force_custom_text,
+    model_type,
+    pretrained,
+    jit,
+    force_custom_text,
 ):
     model, _, preprocess = open_clip.create_model_and_transforms(
         model_type,

@@ -15,10 +15,28 @@ import torch
 import torchvision.datasets as datasets
 import webdataset as wds
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableDataset, get_worker_info
+from torch.utils.data import (
+    Dataset,
+    DataLoader,
+    SubsetRandomSampler,
+    IterableDataset,
+    get_worker_info,
+)
 from torch.utils.data.distributed import DistributedSampler
 from webdataset.filters import _shuffle
-from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
+from webdataset.tariterators import (
+    base_plus_ext,
+    url_opener,
+    tar_file_expander,
+    valid_sample,
+)
+from torchvision.transforms import v2
+from training.coco_segmentation_simple import COCOSegmentationEZMapped80
+from open_clip.tokenizer import SimpleTokenizer
+from functools import partial
+
+# import spacy
+# nlp = spacy.load("en_core_web_trf")
 
 try:
     import horovod.torch as hvd
@@ -27,14 +45,16 @@ except ImportError:
 
 
 class CsvDataset(Dataset):
-    def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t", tokenizer=None):
-        logging.debug(f'Loading csv data from {input_filename}.')
+    def __init__(
+        self, input_filename, transforms, img_key, caption_key, sep="\t", tokenizer=None
+    ):
+        logging.debug(f"Loading csv data from {input_filename}.")
         df = pd.read_csv(input_filename, sep=sep)
 
         self.images = df[img_key].tolist()
         self.captions = df[caption_key].tolist()
         self.transforms = transforms
-        logging.debug('Done loading data.')
+        logging.debug("Done loading data.")
 
         self.tokenize = tokenizer
 
@@ -49,7 +69,7 @@ class CsvDataset(Dataset):
 
 class SharedEpoch:
     def __init__(self, epoch: int = 0):
-        self.shared_epoch = Value('i', epoch)
+        self.shared_epoch = Value("i", epoch)
 
     def set_value(self, epoch):
         self.shared_epoch.value = epoch
@@ -77,9 +97,10 @@ def expand_urls(urls, weights=None):
         return expanded_urls, None
     if isinstance(urls, str):
         urllist = urls.split("::")
-        weights = weights.split('::')
-        assert len(weights) == len(urllist),\
-            f"Expected the number of data components ({len(urllist)}) and weights({len(weights)}) to match."
+        weights = weights.split("::")
+        assert len(weights) == len(
+            urllist
+        ), f"Expected the number of data components ({len(urllist)}) and weights({len(weights)}) to match."
         weights = [float(weight) for weight in weights]
         all_urls, all_weights = [], []
         for url, weight in zip(urllist, weights):
@@ -96,14 +117,14 @@ def expand_urls(urls, weights=None):
 def get_dataset_size(shards):
     shards_list, _ = expand_urls(shards)
     dir_path = os.path.dirname(shards_list[0])
-    sizes_filename = os.path.join(dir_path, 'sizes.json')
-    len_filename = os.path.join(dir_path, '__len__')
+    sizes_filename = os.path.join(dir_path, "sizes.json")
+    len_filename = os.path.join(dir_path, "__len__")
     if os.path.exists(sizes_filename):
-        sizes = json.load(open(sizes_filename, 'r'))
+        sizes = json.load(open(sizes_filename, "r"))
         total_size = sum([int(sizes[os.path.basename(shard)]) for shard in shards_list])
     elif os.path.exists(len_filename):
         # FIXME this used to be eval(open(...)) but that seemed rather unsafe
-        total_size = ast.literal_eval(open(len_filename, 'r').read())
+        total_size = ast.literal_eval(open(len_filename, "r").read())
     else:
         total_size = None  # num samples undefined
         # some common dataset sizes (at time of authors last download)
@@ -122,6 +143,7 @@ def get_imagenet(args, preprocess_fns, split):
 
     if split == "v2":
         from imagenetv2_pytorch import ImageNetV2Dataset
+
         dataset = ImageNetV2Dataset(location=args.imagenet_v2, transform=preprocess_val)
     else:
         if is_train:
@@ -146,7 +168,7 @@ def get_imagenet(args, preprocess_fns, split):
             np.random.shuffle(arr)
             idxs[m] = arr
 
-        idxs = idxs.astype('int')
+        idxs = idxs.astype("int")
         sampler = SubsetRandomSampler(np.where(idxs)[0])
     else:
         sampler = None
@@ -156,6 +178,41 @@ def get_imagenet(args, preprocess_fns, split):
         batch_size=args.batch_size,
         num_workers=args.workers,
         sampler=sampler,
+    )
+
+    return DataInfo(dataloader=dataloader, sampler=sampler)
+
+
+def get_coco(args):
+    transforms = v2.Compose(
+        [
+            v2.ToTensor(),
+            v2.Normalize(
+                mean=(0.48145466, 0.4578275, 0.40821073),
+                std=(0.26862954, 0.26130258, 0.27577711),
+            ),
+        ]
+    )
+
+    dataset = COCOSegmentationEZMapped80(
+        args.patch_size,
+        transforms=transforms,
+        root=os.path.join(args.coco_val, "images/val2017"),
+        annFile=os.path.join(args.coco_val, "annotations/instances_val2017.json"),
+        coco_things_classes_path=args.coco_things_classes_path,
+    )
+
+    sampler = (
+        DistributedSampler(dataset) if torch.distributed.is_initialized() else None
+    )
+    # sampler = None
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=args.workers,
+        sampler=sampler,
+        collate_fn=lambda batch: (batch[0][0], batch[0][1]),
     )
 
     return DataInfo(dataloader=dataloader, sampler=sampler)
@@ -172,18 +229,22 @@ def count_samples(dataloader):
 
 
 def filter_no_caption_or_no_image(sample):
-    has_caption = ('txt' in sample)
-    has_image = ('png' in sample or 'jpg' in sample or 'jpeg' in sample or 'webp' in sample)
+    has_caption = "txt" in sample
+    has_image = (
+        "png" in sample or "jpg" in sample or "jpeg" in sample or "webp" in sample
+    )
     return has_caption and has_image
 
 
 def log_and_continue(exn):
     """Call in an exception handler to ignore any exception, issue a warning, and continue."""
-    logging.warning(f'Handling webdataset error ({repr(exn)}). Ignoring.')
+    logging.warning(f"Handling webdataset error ({repr(exn)}). Ignoring.")
     return True
 
 
-def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
+def group_by_keys_nothrow(
+    data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None
+):
     """Return function over iterator that groups key, value pairs into samples.
 
     :param keys: function that splits the key into key and extension (base_plus_ext)
@@ -201,7 +262,11 @@ def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, h
         # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
         #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
         #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
-        if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
+        if (
+            current_sample is None
+            or prefix != current_sample["__key__"]
+            or suffix in current_sample
+        ):
             if valid_sample(current_sample):
                 yield current_sample
             current_sample = dict(__key__=prefix, __url__=filesample["__url__"])
@@ -241,11 +306,11 @@ _SAMPLE_SHUFFLE_INITIAL = 1000
 
 class detshuffle2(wds.PipelineStage):
     def __init__(
-            self,
-            bufsize=1000,
-            initial=100,
-            seed=0,
-            epoch=-1,
+        self,
+        bufsize=1000,
+        initial=100,
+        seed=0,
+        epoch=-1,
     ):
         self.bufsize = bufsize
         self.initial = initial
@@ -292,8 +357,9 @@ class ResampledShards2(IterableDataset):
         self.urls = urls
         self.weights = weights
         if self.weights is not None:
-            assert len(self.urls) == len(self.weights),\
-                f"Number of urls {len(self.urls)} and weights {len(self.weights)} should match."
+            assert len(self.urls) == len(
+                self.weights
+            ), f"Number of urls {len(self.urls)} and weights {len(self.weights)} should match."
         assert isinstance(self.urls[0], str)
         self.nshards = nshards
         self.rng = random.Random()
@@ -322,13 +388,17 @@ class ResampledShards2(IterableDataset):
             if self.weights is None:
                 yield dict(url=self.rng.choice(self.urls))
             else:
-                yield dict(url=self.rng.choices(self.urls, weights=self.weights, k=1)[0])
+                yield dict(
+                    url=self.rng.choices(self.urls, weights=self.weights, k=1)[0]
+                )
 
 
-def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None):
+def get_wds_dataset(
+    args, preprocess_img, is_train, epoch=0, floor=False, tokenizer=None
+):
     input_shards = args.train_data if is_train else args.val_data
     assert input_shards is not None
-    resampled = getattr(args, 'dataset_resampled', False) and is_train
+    resampled = getattr(args, "dataset_resampled", False) and is_train
 
     num_shards = None
     if is_train:
@@ -338,77 +408,297 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
             num_samples, num_shards = get_dataset_size(input_shards)
             if not num_samples:
                 raise RuntimeError(
-                    'Currently, the number of dataset samples must be specified for the training dataset. '
-                    'Please specify it via `--train-num-samples` if no dataset length info is present.')
+                    "Currently, the number of dataset samples must be specified for the training dataset. "
+                    "Please specify it via `--train-num-samples` if no dataset length info is present."
+                )
     else:
         # Eval will just exhaust the iterator if the size is not specified.
-        num_samples = args.val_num_samples or 0 
+        num_samples = args.val_num_samples or 0
 
-    shared_epoch = SharedEpoch(epoch=epoch)  # create a shared epoch store to sync epoch to dataloader worker proc
-    
+    shared_epoch = SharedEpoch(
+        epoch=epoch
+    )  # create a shared epoch store to sync epoch to dataloader worker proc
+
     if resampled:
-        pipeline = [ResampledShards2(
-            input_shards,
-            weights=args.train_data_upsampling_factors,
-            deterministic=True,
-            epoch=shared_epoch,
-        )]
+        pipeline = [
+            ResampledShards2(
+                input_shards,
+                weights=args.train_data_upsampling_factors,
+                deterministic=True,
+                epoch=shared_epoch,
+            )
+        ]
     else:
-        assert args.train_data_upsampling_factors is None,\
-            "--train_data_upsampling_factors is only supported when sampling with replacement (with --dataset-resampled)."
+        assert (
+            args.train_data_upsampling_factors is None
+        ), "--train_data_upsampling_factors is only supported when sampling with replacement (with --dataset-resampled)."
         pipeline = [wds.SimpleShardList(input_shards)]
 
     # at this point we have an iterator over all the shards
     if is_train:
         if not resampled:
-            pipeline.extend([
-                detshuffle2(
-                    bufsize=_SHARD_SHUFFLE_SIZE,
-                    initial=_SHARD_SHUFFLE_INITIAL,
-                    seed=args.seed,
-                    epoch=shared_epoch,
+            pipeline.extend(
+                [
+                    detshuffle2(
+                        bufsize=_SHARD_SHUFFLE_SIZE,
+                        initial=_SHARD_SHUFFLE_INITIAL,
+                        seed=args.seed,
+                        epoch=shared_epoch,
+                    ),
+                    wds.split_by_node,
+                    wds.split_by_worker,
+                ]
+            )
+        pipeline.extend(
+            [
+                # at this point, we have an iterator over the shards assigned to each worker at each node
+                tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
+                wds.shuffle(
+                    bufsize=_SAMPLE_SHUFFLE_SIZE,
+                    initial=_SAMPLE_SHUFFLE_INITIAL,
                 ),
-                wds.split_by_node,
-                wds.split_by_worker,
-            ])
-        pipeline.extend([
-            # at this point, we have an iterator over the shards assigned to each worker at each node
-            tarfile_to_samples_nothrow,  # wds.tarfile_to_samples(handler=log_and_continue),
-            wds.shuffle(
-                bufsize=_SAMPLE_SHUFFLE_SIZE,
-                initial=_SAMPLE_SHUFFLE_INITIAL,
-            ),
-        ])
+            ]
+        )
     else:
-        pipeline.extend([
-            wds.split_by_worker,
-            # at this point, we have an iterator over the shards assigned to each worker
-            wds.tarfile_to_samples(handler=log_and_continue),
-        ])
-    pipeline.extend([
-        wds.select(filter_no_caption_or_no_image),
-        wds.decode("pilrgb", handler=log_and_continue),
-        wds.rename(image="jpg;png;jpeg;webp", text="txt"),
-        wds.map_dict(image=preprocess_img, text=lambda text: tokenizer(text)[0]),
-        wds.to_tuple("image", "text"),
-        wds.batched(args.batch_size, partial=not is_train)
-    ])
+        pipeline.extend(
+            [
+                wds.split_by_worker,
+                # at this point, we have an iterator over the shards assigned to each worker
+                wds.tarfile_to_samples(handler=log_and_continue),
+            ]
+        )
+    # def f(sample):
+    #     print(sample)
+
+    with open(args.concepts_path, "r") as f:
+        concepts_to_index = {c.strip(): index for index, c in enumerate(f.readlines())}
+
+    def custom_word_tokenizer(text):
+        lst = [
+            concepts_to_index[word.lower()] if word.lower() in concepts_to_index else -1
+            for word in text.split(" ")
+        ]
+        tensor = torch.IntTensor(lst)
+        MAX_LEN = 77  # 77 is context length for BPE tokenizer
+        if len(tensor) < MAX_LEN:
+            tensor = torch.cat(
+                [tensor, -2 * torch.ones(MAX_LEN - len(tensor), dtype=torch.int)]
+            )
+        return tensor[:MAX_LEN]
+
+    def get_shard_id(url):
+        import re
+
+        if ".." in url:
+            int(re.sub("[^0-9]", "", url.split("/")[-1].split(".")[0]))
+        return int(re.sub("[^0-9]", "", url.split("/")[-1].split(".")[0]))
+
+    def extract_nouns(tokenizer_decoder, noun_to_index, sample):
+        # Get the tokenized caption
+        tokenized_caption = sample["text"][0].tolist()
+        iterator_tokens_np = enumerate(
+            tokenized_caption[1:], start=1
+        )  # Remove SOS token
+        iterator_tokens_concepts = enumerate(
+            tokenized_caption[1:], start=1
+        )  # Remove SOS token
+        ###################################################################################################################################################
+        doc = nlp(sample["text"][1].lower())
+        tensor_nouns_indices = torch.zeros([2**7, 2**5], dtype=torch.long)
+        tensor_concept_indices = torch.zeros([2**7, 2**5], dtype=torch.long)
+
+        def get_metadata_next_word(iterator_tokens):
+            index, elem = next(iterator_tokens)
+            elem = tokenizer_decoder[elem]
+            curr_raw = [elem]
+            curr = [elem.replace("</w>", "")]
+            word_indices = [index]
+            while not curr_raw[-1].endswith("</w>"):
+                index, elem = next(iterator_tokens)
+                elem = tokenizer_decoder[elem]
+                curr_raw.append(elem)
+                curr.append(elem.replace("</w>", ""))
+                word_indices.append(index)
+            return curr, word_indices
+
+        # all_nounsID = []
+        all_nouns = []
+        all_concepts = []
+        concept_index = 0
+        try:
+            for i, np in enumerate(doc.noun_chunks):
+                np_token_indices = []
+                concept_token_indices = []
+                concept_splitted = [
+                    str(child) for child in np.root.children if child.dep_ == "compound"
+                ] + [str(np.root)]
+                concept = " ".join(
+                    [
+                        str(child)
+                        for child in np.root.children
+                        if child.dep_ == "compound"
+                    ]
+                    + [str(np.root.lemma_)]
+                )
+
+                try:
+                    for w in np:
+                        while True:
+                            curr, word_indices = get_metadata_next_word(
+                                iterator_tokens_np
+                            )
+                            if "".join(curr) == str(w):
+                                np_token_indices.extend(word_indices)
+                                break
+                except StopIteration:
+                    pass
+
+                for w in concept_splitted:
+                    while True:
+                        curr, word_indices = get_metadata_next_word(
+                            iterator_tokens_concepts
+                        )
+                        if "".join(curr) == str(w):
+                            concept_token_indices.extend(word_indices)
+                            break
+
+                if True or concept in noun_to_index:
+                    all_nouns.append(str(np))
+                    all_concepts.append(concept)
+                    # all_nounsID.append(noun_to_index[concept])
+                    # all_nounsID_tensor[concept_index] = noun_to_index[concept]
+                    tensor_nouns_indices[concept_index, : len(np_token_indices)] = (
+                        torch.tensor(np_token_indices, dtype=torch.long)
+                    )
+                    tensor_concept_indices[
+                        concept_index, : len(concept_token_indices)
+                    ] = torch.tensor(concept_token_indices, dtype=torch.long)
+                    concept_index += 1
+        except StopIteration:
+            pass
+        ###################################################################################################################################################
+        # Store
+        # sample['text'].extend([tensor_nouns_indices, all_nouns, all_nounsID_tensor])
+        return sample
+
+    def filter_spacy(noun_to_index, tokenizer_decoder, sample):
+        all_nounsID_tensor = -1 * torch.ones([2**5], dtype=torch.long)
+        all_nouns = []
+        tensor_nouns_indices = torch.zeros_like(
+            sample["tensor_nouns_indices.pyd"], dtype=torch.long
+        )
+        tensor_concept_indices = torch.zeros_like(
+            sample["tensor_concept_indices.pyd"], dtype=torch.long
+        )
+        assert tensor_concept_indices.shape == tensor_nouns_indices.shape
+
+        concept_index = 0
+        N_C = ((sample["tensor_concept_indices.pyd"] != 0).sum(dim=1) != 0).sum().item()
+        N_N = ((sample["tensor_nouns_indices.pyd"] != 0).sum(dim=1) != 0).sum().item()
+        if N_C != N_N:
+            sample["tensor_nouns_indices.pyd"] = sample["tensor_concept_indices.pyd"]
+            assert N_C == len(sample["all_concepts.pyd"])
+            assert N_C == len(sample["all_nouns.pyd"])
+        for concept, noun, indices_row, indices_row2 in zip(
+            sample["all_concepts.pyd"],
+            sample["all_nouns.pyd"],
+            sample["tensor_nouns_indices.pyd"],
+            sample["tensor_concept_indices.pyd"],
+        ):
+            if concept in noun_to_index:
+                all_nounsID_tensor[concept_index] = noun_to_index[concept]
+                all_nouns.append(noun)
+                tensor_nouns_indices[concept_index] = indices_row
+                tensor_concept_indices[concept_index] = indices_row2
+                concept_index += 1
+
+        sample["tensor_nouns_indices"] = tensor_nouns_indices
+        sample["all_nouns"] = all_nouns
+        sample["all_nounsID_tensor"] = all_nounsID_tensor
+        sample["tensor_concept_indices"] = tensor_concept_indices
+
+        # print('###########################################################################################################################')
+        # print(sample['text'][1])
+        # for i, token in enumerate(sample['text'][0]):
+        #     dec = tokenizer_decoder[token.item()]
+        #     if token.item() == 0:
+        #         break
+        #     print(i, dec)
+
+        # print("tensor_concept_indices.pyd")
+        # print(sample["tensor_concept_indices.pyd"][~torch.all(sample["tensor_concept_indices.pyd"]==0, dim=1)])
+        # print("tensor_nouns_indices.pyd")
+        # print(sample["tensor_nouns_indices.pyd"][~torch.all(sample["tensor_nouns_indices.pyd"]==0, dim=1)])
+        # print()
+        # print("tensor_concept_indices")
+        # print(sample["tensor_concept_indices"][~torch.all(sample["tensor_concept_indices"]==0, dim=1)])
+        # print("tensor_nouns_indices")
+        # print( sample["tensor_nouns_indices"][~torch.all(sample["tensor_nouns_indices"]==0, dim=1)])
+
+        return sample
+
+    # Instantiate the decoder
+    tokenizer_decoder = SimpleTokenizer().decoder
+    with open(args.nouns_path, "r") as f:
+        valid_nouns = [line.strip().lower() for line in f.readlines()]
+    noun_to_index = {
+        noun: i for i, noun in enumerate(list(sorted(list(set(valid_nouns)))))
+    }
+
+    # Store the number of classes
+    # args.n_classes = len(noun_to_index)
+
+    pipeline.extend(
+        [
+            wds.select(filter_no_caption_or_no_image),
+            wds.decode("pilrgb", handler=log_and_continue),
+            wds.rename(image="jpg;png;jpeg;webp", text="txt"),
+            wds.map_dict(
+                image=preprocess_img,
+                text=lambda text: [
+                    tokenizer(text)[0],
+                    text,
+                    custom_word_tokenizer(text),
+                ],
+                __url__=get_shard_id,
+            ),
+            # wds.map(partial(extract_nouns, tokenizer_decoder, noun_to_index)),
+            wds.map(partial(filter_spacy, noun_to_index, tokenizer_decoder)),
+            wds.to_tuple(
+                "__url__",
+                "image",
+                "text",
+                "tensor_nouns_indices",
+                "tensor_concept_indices",
+                "all_nouns",
+                "all_nounsID_tensor",
+            ),
+            wds.map(lambda x: (x[0], x[1], *x[2], x[3], x[4], x[5], x[6])),
+            wds.batched(args.batch_size, partial=not is_train),
+        ]
+    )
 
     dataset = wds.DataPipeline(*pipeline)
 
     if is_train:
         if not resampled:
             num_shards = num_shards or len(expand_urls(input_shards)[0])
-            assert num_shards >= args.workers * args.world_size, 'number of shards must be >= total workers'
+            assert (
+                num_shards >= args.workers * args.world_size
+            ), "number of shards must be >= total workers"
         # roll over and repeat a few samples to get same number of full batches on each node
         round_fn = math.floor if floor else math.ceil
         global_batch_size = args.batch_size * args.world_size
         num_batches = round_fn(num_samples / global_batch_size)
         num_workers = max(1, args.workers)
-        num_worker_batches = round_fn(num_batches / num_workers)  # per dataloader worker
+        num_worker_batches = round_fn(
+            num_batches / num_workers
+        )  # per dataloader worker
         num_batches = num_worker_batches * num_workers
         num_samples = num_batches * global_batch_size
-        dataset = dataset.with_epoch(num_worker_batches)  # each worker is iterating over this
+        dataset = dataset.with_epoch(
+            num_worker_batches
+        )  # each worker is iterating over this
     else:
         # last batches are partial, eval is done on single (master) node
         num_batches = math.ceil(num_samples / args.batch_size)
@@ -451,7 +741,7 @@ def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
         img_key=args.csv_img_key,
         caption_key=args.csv_caption_key,
         sep=args.csv_separator,
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
     )
     num_samples = len(dataset)
     sampler = DistributedSampler(dataset) if args.distributed and is_train else None
@@ -475,17 +765,17 @@ def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
 class SyntheticDataset(Dataset):
 
     def __init__(
-            self,
-            transform=None,
-            image_size=(224, 224),
-            caption="Dummy caption",
-            dataset_size=100,
-            tokenizer=None,
+        self,
+        transform=None,
+        image_size=(224, 224),
+        caption="Dummy caption",
+        dataset_size=100,
+        tokenizer=None,
     ):
         self.transform = transform
         self.image_size = image_size
         self.caption = caption
-        self.image = Image.new('RGB', image_size)
+        self.image = Image.new("RGB", image_size)
         self.dataset_size = dataset_size
 
         self.preprocess_txt = lambda text: tokenizer(text)[0]
@@ -502,7 +792,11 @@ class SyntheticDataset(Dataset):
 def get_synthetic_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     image_size = preprocess_fn.transforms[0].size
     dataset = SyntheticDataset(
-        transform=preprocess_fn, image_size=image_size, dataset_size=args.train_num_samples, tokenizer=tokenizer)
+        transform=preprocess_fn,
+        image_size=image_size,
+        dataset_size=args.train_num_samples,
+        tokenizer=tokenizer,
+    )
     num_samples = len(dataset)
     sampler = DistributedSampler(dataset) if args.distributed and is_train else None
     shuffle = is_train and sampler is None
@@ -530,17 +824,18 @@ def get_dataset_fn(data_path, dataset_type):
     elif dataset_type == "synthetic":
         return get_synthetic_dataset
     elif dataset_type == "auto":
-        ext = data_path.split('.')[-1]
-        if ext in ['csv', 'tsv']:
+        ext = data_path.split(".")[-1]
+        if ext in ["csv", "tsv"]:
             return get_csv_dataset
-        elif ext in ['tar']:
+        elif ext in ["tar"]:
             return get_wds_dataset
         else:
             raise ValueError(
-                f"Tried to figure out dataset type, but failed for extension {ext}.")
+                f"Tried to figure out dataset type, but failed for extension {ext}."
+            )
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")
-    
+
 
 def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
     preprocess_train, preprocess_val = preprocess_fns
@@ -548,16 +843,21 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
 
     if args.train_data or args.dataset_type == "synthetic":
         data["train"] = get_dataset_fn(args.train_data, args.dataset_type)(
-            args, preprocess_train, is_train=True, epoch=epoch, tokenizer=tokenizer)
+            args, preprocess_train, is_train=True, epoch=epoch, tokenizer=tokenizer
+        )
 
     if args.val_data:
         data["val"] = get_dataset_fn(args.val_data, args.dataset_type)(
-            args, preprocess_val, is_train=False, tokenizer=tokenizer)
+            args, preprocess_val, is_train=False, tokenizer=tokenizer
+        )
 
     if args.imagenet_val is not None:
         data["imagenet-val"] = get_imagenet(args, preprocess_fns, "val")
 
     if args.imagenet_v2 is not None:
         data["imagenet-v2"] = get_imagenet(args, preprocess_fns, "v2")
+
+    if args.coco_val is not None:
+        data["coco_val"] = get_coco(args)
 
     return data

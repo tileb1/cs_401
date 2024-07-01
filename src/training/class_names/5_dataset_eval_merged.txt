@@ -1,0 +1,272 @@
+airplane
+animal
+apparel
+apple
+arcade machine
+armchair
+ashcan
+awning
+backpack
+bag
+ball
+banana
+banner
+bannister
+bar
+barrel
+base
+baseball bat
+baseball glove
+basket
+bathtub
+bear
+bed
+bed 
+bedclothes
+bench
+blanket
+blind
+book
+bookcase
+booth
+bowl
+box
+branch
+bridge
+broccoli
+buffet
+building
+building other
+bulletin board
+bush
+cabinet
+cage
+cake
+canopy
+cardboard
+carpet
+carrot
+case
+ceiling
+ceiling other
+ceiling tile
+cell phone
+chandelier
+chest of drawers
+clock
+cloth
+clothes
+clouds
+coffee table
+column
+computer
+conveyer belt
+couch
+counter
+countertop
+cradle
+crt screen
+cup
+cupboard
+curtain
+cushion
+desk
+desk stuff
+dirt
+dirt track
+dishwasher
+donut
+door
+door stuff
+earth
+elephant
+escalator
+fan
+fence
+field
+fire hydrant
+fireplace
+flag
+floor
+floor marble
+floor other
+floor stone
+floor tile
+floor wood
+flower
+fog
+food
+food other
+fork
+fountain
+frisbee
+fruit
+furniture
+furniture other
+giraffe
+glass
+grandstand
+grass
+gravel
+ground
+ground other
+hair drier
+handbag
+hill
+hood
+hot dog
+house
+hovel
+keyboard
+kitchen island
+kite
+knife
+lake
+lamp
+land
+laptop
+leaves
+light
+mat
+metal
+microwave
+minibike
+mirror
+mirror stuff
+monitor
+moss
+motorcycle
+mountain
+mouse
+mud
+napkin
+net
+orange
+ottoman
+oven
+painting
+palm
+paper
+parking meter
+path
+pavement
+pier
+pillow
+pizza
+plant
+plant other
+plastic
+plate
+platform
+playingfield
+plaything
+pole
+pool table
+poster
+pot
+radiator
+railing
+railroad
+refrigerator
+remote
+rider
+river
+road
+rock
+roof
+rug
+runway
+salad
+sand
+sandwich
+scissors
+sconce
+screen
+screen door
+sculpture
+sea
+seat
+shelf
+shelves
+ship
+shower
+sidewalk
+sign
+signboard
+sink
+skateboard
+skis
+sky
+sky other
+skyscraper
+snow
+snowboard
+solid
+solid other
+spoon
+sports ball
+stage
+stairs
+stairway
+step
+stone
+stool
+stop sign
+stove
+straw
+streetlight
+structural
+structural other
+suitcase
+surfboard
+swimming pool
+swivel chair
+table
+tank
+teddy bear
+television receiver
+tennis racket
+tent
+terrain
+textile
+textile other
+tie
+toaster
+toilet
+toothbrush
+towel
+tower
+track
+trade name
+traffic light
+traffic sign
+tray
+tree
+truck
+tv
+umbrella
+van
+vase
+vegetable
+vegetation
+wall
+wall brick
+wall concrete
+wall other
+wall panel
+wall stone
+wall tile
+wall wood
+wardrobe
+washer
+water
+water other
+waterdrops
+waterfall
+window
+window blind
+window other
+windowpane
+wine glass
+wood
+zebra

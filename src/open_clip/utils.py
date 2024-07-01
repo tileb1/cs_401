@@ -6,7 +6,7 @@ from torch import nn as nn
 from torchvision.ops.misc import FrozenBatchNorm2d
 
 
-def freeze_batch_norm_2d(module, module_match={}, name=''):
+def freeze_batch_norm_2d(module, module_match={}, name=""):
     """
     Converts all `BatchNorm2d` and `SyncBatchNorm` layers of provided module into `FrozenBatchNorm2d`. If `module` is
     itself an instance of either `BatchNorm2d` or `SyncBatchNorm`, it is converted into `FrozenBatchNorm2d` and
@@ -26,7 +26,9 @@ def freeze_batch_norm_2d(module, module_match={}, name=''):
     is_match = True
     if module_match:
         is_match = name in module_match
-    if is_match and isinstance(module, (nn.modules.batchnorm.BatchNorm2d, nn.modules.batchnorm.SyncBatchNorm)):
+    if is_match and isinstance(
+        module, (nn.modules.batchnorm.BatchNorm2d, nn.modules.batchnorm.SyncBatchNorm)
+    ):
         res = FrozenBatchNorm2d(module.num_features)
         res.num_features = module.num_features
         res.affine = module.affine
@@ -38,7 +40,7 @@ def freeze_batch_norm_2d(module, module_match={}, name=''):
         res.eps = module.eps
     else:
         for child_name, child in module.named_children():
-            full_child_name = '.'.join([name, child_name]) if name else child_name
+            full_child_name = ".".join([name, child_name]) if name else child_name
             new_child = freeze_batch_norm_2d(child, module_match, full_child_name)
             if new_child is not child:
                 res.add_module(child_name, new_child)
@@ -51,6 +53,7 @@ def _ntuple(n):
         if isinstance(x, collections.abc.Iterable):
             return x
         return tuple(repeat(x, n))
+
     return parse
 
 
@@ -60,9 +63,12 @@ to_3tuple = _ntuple(3)
 to_4tuple = _ntuple(4)
 to_ntuple = lambda n, x: _ntuple(n)(x)
 
+
 # Replaces all linear layers with linear_replacement
 # TODO: add int8 support for other linear layers including attn and convnets
-def replace_linear(model, linear_replacement, include_modules=['c_fc', 'c_proj'], copy_weights=True):
+def replace_linear(
+    model, linear_replacement, include_modules=["c_fc", "c_proj"], copy_weights=True
+):
     for name, module in model.named_children():
         if len(list(module.children())) > 0:
             replace_linear(module, linear_replacement, include_modules, copy_weights)
@@ -81,9 +87,10 @@ def replace_linear(model, linear_replacement, include_modules=['c_fc', 'c_proj']
 
     return model
 
+
 def convert_int8_model_to_inference_mode(model):
     for m in model.modules():
-        if hasattr(m, 'prepare_for_eval'):
+        if hasattr(m, "prepare_for_eval"):
             int8_original_dtype = m.weight.dtype
             m.prepare_for_eval()
             m.int8_original_dtype = int8_original_dtype
